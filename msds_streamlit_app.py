@@ -1,14 +1,5 @@
 # msds_streamlit_app.py
-# Streamlit UI for MSDS Section Extraction (No settings, high-visibility, multi-file)
-# Usage:
-#   streamlit run msds_streamlit_app.py
-#
-# Requires:
-#   pip install streamlit pdfplumber pdf2image pytesseract pillow pandas
-#
-# Notes:
-#   - This UI imports your local module: msds_section_extractor.py
-#   - Focuses on section-split verification and readability for ~50 PDFs.
+# 가벼운 UI: 설정 없음 / 50개 업로드 / 섹션 1 요약(제품명, 회사명, 주소) 표시
 
 from __future__ import annotations
 import json
@@ -21,6 +12,7 @@ import streamlit as st
 import pandas as pd
 
 import msds_section_extractor as extractor
+from patterns import parse_section  # 섹션 파서 레지스트리
 
 SECTION_TITLES = {
     "화학제품과_회사정보": "1. 화학제품과 회사에 관한 정보",
@@ -37,20 +29,10 @@ SECTION_ORDER = [
     "법적규제",
 ]
 
-
-# -------------------------- Helpers -------------------------- #
 def _save_bytes_to_temp(data: bytes) -> Path:
     with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(data)
         return Path(tmp.name)
-
-def _render_badge(text: str, color: str = "gray"):
-    # lightweight badge using HTML (Streamlit safe)
-    st.markdown(
-        f'<span style="display:inline-block;padding:2px 8px;border-radius:12px;'
-        f'background:{color};color:white;font-size:12px;margin-right:6px;">{text}</span>',
-        unsafe_allow_html=True,
-    )
 
 def _download_json_button(data: dict, file_basename: str):
     payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
@@ -62,19 +44,9 @@ def _download_json_button(data: dict, file_basename: str):
         use_container_width=True,
     )
 
-def _extract_sections_from_bytes(file_bytes: bytes) -> dict:
-    tmp_path = _save_bytes_to_temp(file_bytes)
-    try:
-        sections = extractor.extract_sections(str(tmp_path))
-        return sections or {}
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-
 def _section_len_map(sections: dict) -> dict:
-    return {k: len(sections.get(k, "") or "") for k in SECTION_TITLES.keys()}
+    keys = ["화학제품과_회사정보", "유해성위험성", "구성성분", "물리화학적특성", "법적규제"]
+    return {k: len(sections.get(k, "") or "") for k in keys}
 
 def _found_missing_lists(sections: dict):
     found = [SECTION_TITLES[k] for k in SECTION_ORDER if k in sections and sections.get(k)]
@@ -98,11 +70,16 @@ def _render_sections_tabs(sections: dict, key_prefix: str = ""):
                 key=f"{key_prefix}_txt_{k}_{len(text)}",
             )
 
+def _render_badge(text: str, color: str = "#6c757d"):
+    st.markdown(
+        f'<span style="display:inline-block;padding:2px 8px;border-radius:12px;'
+        f'background:{color};color:white;font-size:12px;margin-right:6px;">{text}</span>',
+        unsafe_allow_html=True,
+    )
 
-# -------------------------- Page -------------------------- #
 st.set_page_config(page_title="MSDS Section Extractor", layout="wide")
 st.title("MSDS Section Extractor")
-st.caption("여러 PDF를 한 번에 업로드하고, 섹션(1/2/3/9/15)이 제대로 분리되었는지 빠르게 검증할 수 있는 화면입니다.")
+st.caption("여러 PDF를 한 번에 업로드하고, 섹션 분리와 1번 섹션 요약(제품명/회사명/주소)을 확인합니다.")
 
 uploaded_files = st.file_uploader(
     "PDF 파일 업로드 (여러 개 선택 가능, ~50권 권장)",
@@ -110,7 +87,6 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True,
 )
 
-# Quick filters (not settings)
 colf1, colf2 = st.columns([2, 1])
 with colf1:
     name_filter = st.text_input("파일명 필터 (부분 일치)", value="")
@@ -121,78 +97,95 @@ if not uploaded_files:
     st.info("위에서 PDF를 업로드하세요.")
     st.stop()
 
-# Read all bytes once to avoid stream exhaustion
-file_entries = []
+# Read bytes once
+entries = []
 for uf in uploaded_files:
     b = uf.getvalue()
-    file_entries.append({
-        "name": uf.name,
-        "size_kb": round(uf.size / 1024, 1),
-        "bytes": b,
-        "is_pdf": b.startswith(b"%PDF"),
-    })
+    if not b:
+        continue
+    entries.append({"name": uf.name, "size_kb": round(uf.size/1024, 1), "bytes": b, "is_pdf": b.startswith(b"%PDF")})
 
-# Optional name filter pre-apply for performance
+# Filter
 if name_filter.strip():
-    file_entries = [e for e in file_entries if name_filter.strip().lower() in e["name"].lower()]
+    entries = [e for e in entries if name_filter.strip().lower() in e["name"].lower()]
 
 # Process
-progress = st.progress(0, text="추출 준비 중...")
-results = []
+progress = st.progress(0, text="처리 중...")
+rows = []
 start = time.time()
 
-for i, ent in enumerate(file_entries, start=1):
+for i, ent in enumerate(entries, start=1):
     fname = ent["name"]
     status = "OK"
     err = ""
     sections = {}
+    s1_summary = {"product_name": "", "company_name": "", "address": ""}
+
     if not ent["is_pdf"]:
         status = "INVALID"
         err = "%PDF 헤더 없음"
     else:
+        temp = _save_bytes_to_temp(ent["bytes"])
         try:
-            sections = _extract_sections_from_bytes(ent["bytes"])
+            sections = extractor.extract_sections(str(temp)) or {}
+            # 섹션 1 요약
+            s1_text = sections.get("화학제품과_회사정보", "")
+            if s1_text:
+                s1_summary = parse_section("화학제품과_회사정보", s1_text) or s1_summary
         except Exception as e:
             status = "ERROR"
             err = str(e)
+        finally:
+            try:
+                os.remove(temp)
+            except Exception:
+                pass
 
-    s_found, s_missing = _found_missing_lists(sections)
+    found, missing = _found_missing_lists(sections)
     lens = _section_len_map(sections)
 
-    results.append({
-        "index": i,
-        "file": fname,
-        "size_kb": ent["size_kb"],
-        "status": status,
-        "found_count": len(s_found),
-        "missing_count": len(s_missing),
-        "missing_list": ", ".join(s_missing),
-        "sections": sections,
-        **{f"len_{k}": lens[k] for k in SECTION_TITLES.keys()},
-        "error": err,
+    rows.append({
+        "#": i,
+        "File": fname,
+        "KB": ent["size_kb"],
+        "Status": status,
+        "Found": len(found),
+        "Missing": len(missing),
+        "len_1": lens["화학제품과_회사정보"],
+        "len_2": lens["유해성위험성"],
+        "len_3": lens["구성성분"],
+        "len_9": lens["물리화학적특성"],
+        "len_15": lens["법적규제"],
+        "제품명": s1_summary.get("product_name", ""),
+        "회사명": s1_summary.get("company_name", ""),
+        "주소": s1_summary.get("address", ""),
+        "_sections": sections,
+        "_s1": s1_summary,
+        "_err": err,
     })
 
-    progress.progress(i / max(1, len(file_entries)), text=f"처리 중... ({i}/{len(file_entries)})")
+    progress.progress(i / max(1, len(entries)), text=f"처리 중... ({i}/{len(entries)})")
 
 elapsed = time.time() - start
 progress.empty()
-st.success(f"총 {len(results)}개 파일 처리 완료 (약 {elapsed:.1f}초)")
+st.success(f"총 {len(rows)}개 파일 처리 완료 (약 {elapsed:.1f}초)")
 
-# Build summary table
 df = pd.DataFrame([{
-    "#": r["index"],
-    "File": r["file"],
-    "KB": r["size_kb"],
-    "Status": r["status"],
-    "Found": r["found_count"],
-    "Missing": r["missing_count"],
-    "Missing List": r["missing_list"],
-    "len_1": r["len_화학제품과_회사정보"],
-    "len_2": r["len_유해성위험성"],
-    "len_3": r["len_구성성분"],
-    "len_9": r["len_물리화학적특성"],
-    "len_15": r["len_법적규제"],
-} for r in results])
+    "#": r["#"],
+    "File": r["File"],
+    "KB": r["KB"],
+    "Status": r["Status"],
+    "Found": r["Found"],
+    "Missing": r["Missing"],
+    "len_1": r["len_1"],
+    "len_2": r["len_2"],
+    "len_3": r["len_3"],
+    "len_9": r["len_9"],
+    "len_15": r["len_15"],
+    "제품명": r["제품명"],
+    "회사명": r["회사명"],
+    "주소": r["주소"],
+} for r in rows])
 
 if only_missing:
     df_view = df[df["Missing"] > 0].reset_index(drop=True)
@@ -200,40 +193,47 @@ else:
     df_view = df
 
 st.subheader("요약")
-st.caption("섹션 분리 품질을 한눈에 확인할 수 있도록 길이(len_*)와 누락(Missing)을 표로 제공합니다.")
+st.caption("섹션 길이와 함께 1번 섹션 요약(제품명/회사명/주소)을 표로 제공합니다.")
 st.dataframe(df_view, use_container_width=True, height=min(600, 100 + 28 * max(4, len(df_view))))
 
 st.divider()
 st.subheader("파일별 상세")
 
-# Render detailed panels, filtered same as table
-filtered_results = results if not only_missing else [r for r in results if r["missing_count"] > 0]
-
-for r in filtered_results:
+for r in rows if not only_missing else [rr for rr in rows if rr["Missing"] > 0]:
     with st.container(border=True):
-        topc1, topc2, topc3, topc4 = st.columns([4, 1, 1, 2])
+        topc1, topc2, topc3 = st.columns([5, 1, 2])
         with topc1:
-            st.markdown(f"### {r['index']}. {r['file']}")
+            st.markdown(f"### {r['#']}. {r['File']}")
         with topc2:
-            _render_badge(f"{r['size_kb']} KB", "#6c757d")
+            _render_badge(f"{r['KB']} KB")
         with topc3:
-            color = "#28a745" if r["missing_count"] == 0 and r["status"] == "OK" else ("#dc3545" if r["status"] != "OK" or r["missing_count"] > 0 else "#6c757d")
-            _render_badge(r["status"], color)
-        with topc4:
-            # quick summary badges
-            _render_badge(f"Found {r['found_count']}", "#17a2b8")
-            _render_badge(f"Missing {r['missing_count']}", "#ffc107")
+            color = "#28a745" if r["Missing"] == 0 and r["Status"] == "OK" else ("#dc3545" if r["Status"] != "OK" or r["Missing"] > 0 else "#6c757d")
+            _render_badge(r["Status"], color)
 
-        if r["error"]:
-            st.error(f"에러: {r['error']}")
+        if r["_err"]:
+            st.error(f"에러: {r['_err']}")
 
-        # Missing list quick glance
-        if r["missing_count"] > 0:
-            st.warning("누락된 섹션: " + (r["missing_list"] if r["missing_list"] else "없음"))
+        # 섹션 1 요약 카드
+        s1 = r["_s1"] or {}
+        # 수정 버전 (사전 계산 → f-string에 변수만 삽입)
+        product_name = s1.get("product_name", "") or "—"
+        company_name = s1.get("company_name", "") or "—"
+        address_html = (s1.get("address", "") or "").replace("\n", "<br/>") or "—"
 
-        # Visible tabs with section text
-        _render_sections_tabs(r["sections"], key_prefix=f"{r['index']}")
+        st.markdown(
+            f"""
+            <div style="padding:12px;border:1px solid #e9ecef;border-radius:12px;background:#f8f9fa;margin:6px 0;">
+                <div style="font-weight:600;margin-bottom:6px;">섹션 1 요약</div>
+                <div><b>제품명</b>: {product_name}</div>
+                <div><b>회사명</b>: {company_name}</div>
+                <div><b>주소</b>: {address_html}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-        # Download per-file JSON
-        _download_json_button(r["sections"], Path(r["file"]).stem)
+        # 전체 섹션 텍스트 탭
+        _render_sections_tabs(r["_sections"], key_prefix=f"{r['#']}")
 
+        # 파일별 섹션 JSON 다운로드
+        _download_json_button(r["_sections"], Path(r["File"]).stem)
