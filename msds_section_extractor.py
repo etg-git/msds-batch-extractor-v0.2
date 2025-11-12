@@ -404,13 +404,25 @@ def find_section_patterns():
 
 # ── 유사도(백업) ──────────────────────────────────────────────────────────────
 FUZZY_CANDIDATES = {
-    "화학제품과_회사정보": ["화학 제품과 회사", "화학제품", "제품 명", "화학 회사", "회사 정보"],
+    "화학제품과_회사정보": ["화학 제품과 회사", "화학제품", "화학 회사", "회사 정보"],  # "제품 명" 제거
     "유해성위험성": ["유해 위험성", "위험 유해성", "유해성", "위험성", "유해 위험"],
     "구성성분": ["구성 성분", "성분표", "성분 함유량", "성분 함량", "조성 성분"],
     "물리화학적특성": ["물리 화학적 특성", "물리 화학적 특징", "물리. 화학적 특성", "물리·화학적 특성"],
     "법적규제": ["법적 규제", "법적 규제 현황", "법규 규제", "법규 규제 현황"],
 }
 
+def is_product_name_line(s: str) -> bool:
+    """
+    섹션 1 본문 첫 항목 '제품명' 라인 감지.
+    - '1)제품명', '제품명 :', 'Product name' 등 허용
+    """
+    if not s:
+        return False
+    line = re.sub(r"[\u00A0\u2000-\u200B]", " ", s).strip()
+    # 번호 접두 허용: 1), 1., [1] 등은 선택적
+    if re.match(r"^\s*(?:\[(?:1|①)\]|1\s*[\.\):]?)?\s*(제품\s*명|제품명|product\s*name)\s*[:：]?", line, re.IGNORECASE):
+        return True
+    return False
 
 def looks_like_sentence(line: str) -> bool:
     s = re.sub(r"[\u00A0\u2000-\u200B]", " ", line).strip()
@@ -735,28 +747,35 @@ def extract_sections(pdf_path: str) -> dict:
     # 섹션별 본문 추출
     sections = {}
     for section_name, start_pos in sorted(section_positions.items(), key=lambda x: x[1]):
-        # 종료 위치 결정
-        candidates_after = [p for p in section_positions.values() if p > start_pos]
-        default_end = min(candidates_after) if candidates_after else len(lines)
-        if section_name in BOUNDARY_NEXT_NUMBER:
-            forced_end = find_next_boundary_for(lines, start_pos, BOUNDARY_NEXT_NUMBER[section_name])
-            end_pos = min(default_end, forced_end)
-        else:
-            end_pos = default_end
+      # 종료 위치 결정 (기존 그대로)
+      candidates_after = [p for p in section_positions.values() if p > start_pos]
+      default_end = min(candidates_after) if candidates_after else len(lines)
+      if section_name in BOUNDARY_NEXT_NUMBER:
+          forced_end = find_next_boundary_for(lines, start_pos, BOUNDARY_NEXT_NUMBER[section_name])
+          end_pos = min(default_end, forced_end)
+      else:
+          end_pos = default_end
 
-        # 본문
-        body = []
-        for line in lines[start_pos + 1:end_pos]:
-            if line.strip() and not is_header_line(line):
-                body.append(line)
-        sections[section_name] = "\n".join(body)
+      # 섹션 1의 경우, 시작 줄이 '제품명'이면 그 줄부터 본문 포함
+      body_start = start_pos + 1
+      if section_name == "화학제품과_회사정보":
+          start_line = lines[start_pos] if 0 <= start_pos < len(lines) else ""
+          if is_product_name_line(start_line):
+              body_start = start_pos  # '제품명' 라인을 보존
+
+      # 본문 구성
+      body = []
+      for line in lines[body_start:end_pos]:
+          if line.strip() and not is_header_line(line):
+              body.append(line)
+      sections[section_name] = "\n".join(body)
 
     return sections
 
 # ── 실행부 ────────────────────────────────────────────────────────────────────
 def main():
     # 필요 경로로 바꿔서 사용
-    pdf_path = r"D:\PROJECT\AI\msds-batch-extractor\msds\msds\SCA-0009 O2(산소).pdf"
+    pdf_path = r"D:\PROJECT\AI\msds-batch-extractor-v0.2\msds\msds\test4.pdf"
     # run_debug(pdf_path, section_keys=["물리화학적특성", "법적규제"])
 
     print("=" * 80)

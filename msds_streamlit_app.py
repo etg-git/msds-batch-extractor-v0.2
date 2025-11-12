@@ -1,33 +1,27 @@
-# Streamlit UI for MSDS Section Extraction
-# - Multiple PDF upload
-# - Clear, scrollable section previews per file (visibility first)
-#
+# msds_streamlit_app.py
+# Streamlit UI for MSDS Section Extraction (No settings, high-visibility, multi-file)
 # Usage:
 #   streamlit run msds_streamlit_app.py
 #
-# Requirements (typical):
-#   pip install streamlit pdfplumber pdf2image pytesseract pillow
-#   - Poppler is required for pdf2image OCR on Windows/macOS.
+# Requires:
+#   pip install streamlit pdfplumber pdf2image pytesseract pillow pandas
 #
-# App notes:
+# Notes:
 #   - This UI imports your local module: msds_section_extractor.py
-#   - You can toggle OCR and set POPPLER_PATH in the sidebar at runtime.
-#   - For each uploaded PDF, sections are extracted and shown in tabs.
+#   - Focuses on section-split verification and readability for ~50 PDFs.
 
 from __future__ import annotations
 import json
 import os
+import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import streamlit as st
+import pandas as pd
 
-# Import your extractor module (must be in the same directory or in PYTHONPATH)
 import msds_section_extractor as extractor
 
-# -----------------------------------------------------------------------------
-# UI helpers
-# -----------------------------------------------------------------------------
 SECTION_TITLES = {
     "화학제품과_회사정보": "1. 화학제품과 회사에 관한 정보",
     "유해성위험성": "2. 유해성·위험성",
@@ -44,141 +38,202 @@ SECTION_ORDER = [
 ]
 
 
-def _save_uploaded_to_temp(uploaded) -> Path:
-    """Persist the uploaded file to a temp .pdf and return its path."""
+# -------------------------- Helpers -------------------------- #
+def _save_bytes_to_temp(data: bytes) -> Path:
     with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(uploaded.read())
+        tmp.write(data)
         return Path(tmp.name)
 
+def _render_badge(text: str, color: str = "gray"):
+    # lightweight badge using HTML (Streamlit safe)
+    st.markdown(
+        f'<span style="display:inline-block;padding:2px 8px;border-radius:12px;'
+        f'background:{color};color:white;font-size:12px;margin-right:6px;">{text}</span>',
+        unsafe_allow_html=True,
+    )
 
-def _download_json_button(label: str, data: dict, file_basename: str):
+def _download_json_button(data: dict, file_basename: str):
     payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     st.download_button(
-        label=label,
+        label="섹션 JSON 다운로드",
         data=payload,
         file_name=f"{file_basename}_sections.json",
         mime="application/json",
         use_container_width=True,
     )
 
+def _extract_sections_from_bytes(file_bytes: bytes) -> dict:
+    tmp_path = _save_bytes_to_temp(file_bytes)
+    try:
+        sections = extractor.extract_sections(str(tmp_path))
+        return sections or {}
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
-def _render_sections(sections: dict):
-    keys = [k for k in SECTION_ORDER if k in sections]
+def _section_len_map(sections: dict) -> dict:
+    return {k: len(sections.get(k, "") or "") for k in SECTION_TITLES.keys()}
+
+def _found_missing_lists(sections: dict):
+    found = [SECTION_TITLES[k] for k in SECTION_ORDER if k in sections and sections.get(k)]
+    missing = [SECTION_TITLES[k] for k in SECTION_ORDER if k not in sections or not sections.get(k)]
+    return found, missing
+
+def _render_sections_tabs(sections: dict, key_prefix: str = ""):
+    keys = [k for k in SECTION_ORDER if sections.get(k)]
     if not keys:
         st.warning("추출된 섹션이 없습니다.")
         return
-
     tabs = st.tabs([SECTION_TITLES[k] for k in keys])
     for k, tab in zip(keys, tabs):
         with tab:
             text = sections.get(k, "") or ""
-            meta = f"길이: {len(text):,}자"
-            st.caption(meta)
-            # Big, readable text area to emphasize visibility and easy copy
+            st.caption(f"길이: {len(text):,}자")
             st.text_area(
                 label=SECTION_TITLES[k],
                 value=text,
                 height=360,
-                key=f"txt_{k}_{len(text)}",
+                key=f"{key_prefix}_txt_{k}_{len(text)}",
             )
 
 
-# -----------------------------------------------------------------------------
-# Streamlit page config
-# -----------------------------------------------------------------------------
+# -------------------------- Page -------------------------- #
 st.set_page_config(page_title="MSDS Section Extractor", layout="wide")
-st.title("MSDS Section Extractor (텍스트+OCR 하이브리드)")
-st.write("여러 개의 PDF를 업로드하면 아래에 섹션별로 가시성 높게 표시합니다.")
+st.title("MSDS Section Extractor")
+st.caption("여러 PDF를 한 번에 업로드하고, 섹션(1/2/3/9/15)이 제대로 분리되었는지 빠르게 검증할 수 있는 화면입니다.")
 
-# Sidebar controls
-with st.sidebar:
-    st.header("설정")
-    enable_ocr = st.checkbox("OCR 사용", value=getattr(extractor, "ENABLE_OCR", True))
-    extractor.ENABLE_OCR = enable_ocr
-
-    poppler_default = getattr(extractor, "POPPLER_PATH", "") or ""
-    poppler_path = st.text_input("POPPLER_PATH (Windows/macOS)", value=poppler_default)
-    extractor.POPPLER_PATH = poppler_path
-
-    tess_lang_default = getattr(extractor, "TESS_LANG", "kor+eng")
-    tess_lang = st.text_input("Tesseract 언어 (예: kor+eng)", value=tess_lang_default)
-    extractor.TESS_LANG = tess_lang
-
-    ocr_dpi_default = getattr(extractor, "OCR_DPI", 300)
-    ocr_dpi = st.number_input("OCR DPI", min_value=100, max_value=600, value=int(ocr_dpi_default), step=25)
-    extractor.OCR_DPI = int(ocr_dpi)
-
-    min_chars_default = getattr(extractor, "OCR_TEXT_MIN_CHARS", 40)
-    min_chars = st.number_input("텍스트 길이 임계값 (OCR 트리거)", min_value=0, max_value=500, value=int(min_chars_default), step=5)
-    extractor.OCR_TEXT_MIN_CHARS = int(min_chars)
-
-    st.divider()
-    st.caption("변경 사항은 즉시 적용됩니다. 모듈 전역 변수를 런타임에 설정합니다.")
-
-# Uploader (multiple)
 uploaded_files = st.file_uploader(
-    "PDF 파일 업로드 (여러 개 선택 가능)",
+    "PDF 파일 업로드 (여러 개 선택 가능, ~50권 권장)",
     type=["pdf"],
     accept_multiple_files=True,
 )
 
+# Quick filters (not settings)
+colf1, colf2 = st.columns([2, 1])
+with colf1:
+    name_filter = st.text_input("파일명 필터 (부분 일치)", value="")
+with colf2:
+    only_missing = st.checkbox("섹션 누락 파일만 보기", value=False)
+
 if not uploaded_files:
-    st.info("좌측 설정을 확인하고, 위에 PDF 파일을 하나 이상 업로드하세요.")
+    st.info("위에서 PDF를 업로드하세요.")
+    st.stop()
+
+# Read all bytes once to avoid stream exhaustion
+file_entries = []
+for uf in uploaded_files:
+    b = uf.getvalue()
+    file_entries.append({
+        "name": uf.name,
+        "size_kb": round(uf.size / 1024, 1),
+        "bytes": b,
+        "is_pdf": b.startswith(b"%PDF"),
+    })
+
+# Optional name filter pre-apply for performance
+if name_filter.strip():
+    file_entries = [e for e in file_entries if name_filter.strip().lower() in e["name"].lower()]
+
+# Process
+progress = st.progress(0, text="추출 준비 중...")
+results = []
+start = time.time()
+
+for i, ent in enumerate(file_entries, start=1):
+    fname = ent["name"]
+    status = "OK"
+    err = ""
+    sections = {}
+    if not ent["is_pdf"]:
+        status = "INVALID"
+        err = "%PDF 헤더 없음"
+    else:
+        try:
+            sections = _extract_sections_from_bytes(ent["bytes"])
+        except Exception as e:
+            status = "ERROR"
+            err = str(e)
+
+    s_found, s_missing = _found_missing_lists(sections)
+    lens = _section_len_map(sections)
+
+    results.append({
+        "index": i,
+        "file": fname,
+        "size_kb": ent["size_kb"],
+        "status": status,
+        "found_count": len(s_found),
+        "missing_count": len(s_missing),
+        "missing_list": ", ".join(s_missing),
+        "sections": sections,
+        **{f"len_{k}": lens[k] for k in SECTION_TITLES.keys()},
+        "error": err,
+    })
+
+    progress.progress(i / max(1, len(file_entries)), text=f"처리 중... ({i}/{len(file_entries)})")
+
+elapsed = time.time() - start
+progress.empty()
+st.success(f"총 {len(results)}개 파일 처리 완료 (약 {elapsed:.1f}초)")
+
+# Build summary table
+df = pd.DataFrame([{
+    "#": r["index"],
+    "File": r["file"],
+    "KB": r["size_kb"],
+    "Status": r["status"],
+    "Found": r["found_count"],
+    "Missing": r["missing_count"],
+    "Missing List": r["missing_list"],
+    "len_1": r["len_화학제품과_회사정보"],
+    "len_2": r["len_유해성위험성"],
+    "len_3": r["len_구성성분"],
+    "len_9": r["len_물리화학적특성"],
+    "len_15": r["len_법적규제"],
+} for r in results])
+
+if only_missing:
+    df_view = df[df["Missing"] > 0].reset_index(drop=True)
 else:
-    for idx, uf in enumerate(uploaded_files, start=1):
-        file_label = f"{idx}. {uf.name}"
-        with st.container(border=True):
-            c1, c2, c3 = st.columns([3, 1, 1], vertical_alignment="center")
-            with c1:
-                st.subheader(file_label)
-            with c2:
-                st.caption(f"크기: {uf.size/1024:.1f} KB")
-            with c3:
-                st.caption("상태: 처리 중")
+    df_view = df
 
-            # 저장 → 추출
-            tmp_path = _save_uploaded_to_temp(uf)
-            try:
-                with st.spinner("추출 중..."):
-                    sections = extractor.extract_sections(str(tmp_path))
-            except Exception as e:
-                st.error(f"오류 발생: {e}")
-                sections = {}
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
+st.subheader("요약")
+st.caption("섹션 분리 품질을 한눈에 확인할 수 있도록 길이(len_*)와 누락(Missing)을 표로 제공합니다.")
+st.dataframe(df_view, use_container_width=True, height=min(600, 100 + 28 * max(4, len(df_view))))
 
-            # Summary row (what was found)
-            found = [SECTION_TITLES[k] for k in SECTION_ORDER if k in sections]
-            missing = [SECTION_TITLES[k] for k in SECTION_ORDER if k not in sections]
-            st.markdown("발견된 섹션:")
-            st.write(", ".join(found) if found else "없음")
-            if missing:
-                with st.expander("누락된 섹션 보기"):
-                    st.write(", ".join(missing))
+st.divider()
+st.subheader("파일별 상세")
 
-            # Visible content panels
-            _render_sections(sections)
+# Render detailed panels, filtered same as table
+filtered_results = results if not only_missing else [r for r in results if r["missing_count"] > 0]
 
-            # Download JSON (per file)
-            _download_json_button("섹션 JSON 다운로드", sections, Path(uf.name).stem)
+for r in filtered_results:
+    with st.container(border=True):
+        topc1, topc2, topc3, topc4 = st.columns([4, 1, 1, 2])
+        with topc1:
+            st.markdown(f"### {r['index']}. {r['file']}")
+        with topc2:
+            _render_badge(f"{r['size_kb']} KB", "#6c757d")
+        with topc3:
+            color = "#28a745" if r["missing_count"] == 0 and r["status"] == "OK" else ("#dc3545" if r["status"] != "OK" or r["missing_count"] > 0 else "#6c757d")
+            _render_badge(r["status"], color)
+        with topc4:
+            # quick summary badges
+            _render_badge(f"Found {r['found_count']}", "#17a2b8")
+            _render_badge(f"Missing {r['missing_count']}", "#ffc107")
 
-            # Optional debug: page texts preview
-            with st.expander("디버그: 페이지 텍스트 미리보기"):
-                # extract_text_pages_hybrid는 파일 경로를 요구하므로 임시로 다시 저장
-                tmp2 = _save_uploaded_to_temp(uf)
-                try:
-                    pages = extractor.extract_text_pages_hybrid(str(tmp2))
-                finally:
-                    try:
-                        os.remove(tmp2)
-                    except Exception:
-                        pass
-                st.caption(f"총 {len(pages)} 페이지")
-                for i, ptxt in enumerate(pages, start=1):
-                    with st.expander(f"p{i:02d}"):
-                        st.text_area(label=f"페이지 {i}", value=ptxt or "", height=220, key=f"pg_{idx}_{i}")
+        if r["error"]:
+            st.error(f"에러: {r['error']}")
 
-    st.success("처리가 완료되었습니다.")
+        # Missing list quick glance
+        if r["missing_count"] > 0:
+            st.warning("누락된 섹션: " + (r["missing_list"] if r["missing_list"] else "없음"))
+
+        # Visible tabs with section text
+        _render_sections_tabs(r["sections"], key_prefix=f"{r['index']}")
+
+        # Download per-file JSON
+        _download_json_button(r["sections"], Path(r["file"]).stem)
+
