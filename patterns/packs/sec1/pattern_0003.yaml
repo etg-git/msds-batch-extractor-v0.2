@@ -1,0 +1,36 @@
+meta:
+  id: sec1_pattern_0003
+  title: "불릿형(가./○/-) 서브블록"
+  priority: 37
+  doc_signatures:
+    - "가. 제품명"
+    - "나. 제품의 권고 용도와 사용상의 제한"
+    - "다. 제조자/공급자/유통업자 정보"
+    - "○ 제조자 정보"
+    - "○ 공급자/유통업자 정보"
+  seed_keywords:
+    - "제품명"
+    - "회사명"
+    - "주소"
+    - "긴급 전화번호"
+  engines_order: ["block_bullet"]
+
+block_bullet:
+  # 다음 라벨/불릿을 만나면 해당 블록 종료
+  stop_markers:
+    - "^가\\.\\s"
+    - "^나\\.\\s"
+    - "^다\\.\\s"
+    - "^○\\s"
+    - "^-\\s*전화번호"
+    - "^-\\s*긴급"
+  # 라벨과 값 매핑
+  label_aliases:
+    product_name: ["제품명"]
+    company_name: ["회사명","제조자","제조사명","공급자","판매사","수입자", "생산 및 공급 회사명"]  # ← 수입자 추가
+    address: ["주소","소재지","사업장주소","본사주소"]
+  validators:
+    product:
+      forbid_keywords: ["권고", "용도", "제한", "주소", "회사", "전화", "긴급"]
+      require_letter: true
+      forbid_phone: true

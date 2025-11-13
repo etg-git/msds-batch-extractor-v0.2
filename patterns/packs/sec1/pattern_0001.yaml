@@ -1,0 +1,28 @@
+meta:
+  id: sec1_pattern_0001
+  title: "제조자/공급자 서브블록(- 회사명:, - 주소:)"
+  priority: 70
+  doc_signatures:
+    - "제조자/공급자/유통업자 정보"
+    - "○ 제조자 정보"
+    - "○ 공급자"
+    - "- 회사명"
+    - "- 주소"
+  seed_keywords: ["회사명","주소","제조자","공급자"]
+  engines_order: ["kv_inline"]
+
+labels:
+  product:
+    aliases: ["제품명","제품 명","Product name","Trade name"]
+    split: ["colon_or_dash","loose_space","prefix_smart"]
+  company:
+    aliases: ["회사명","제조자","제조사명","공급자","판매사","Supplier","Manufacturer"]
+    split: ["colon_or_dash","two_col_space","prefix_smart"]
+  address:
+    aliases: ["주소","소재지","Address","사업장주소","본사주소"]
+    split: ["colon_or_dash","two_col_space","prefix_smart"]
+validators:
+  product:
+    forbid_keywords: ["전화","긴급","주소","회사","제조","공급자","권고 용도","사용상의 제한"]
+    require_letter: true
+    forbid_phone: true

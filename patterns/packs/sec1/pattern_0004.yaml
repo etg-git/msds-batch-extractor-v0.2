@@ -1,0 +1,36 @@
+meta:
+  id: sec1_pattern_0004
+  title: "한글 목차(가./○) + 대시 라벨(- 회사명:, - 주소:)"
+  priority: 45
+  doc_signatures:
+    - "가. 제품명"
+    - "나. 제품의 권고 용도와 사용상의 제한"
+    - "다. 제조자/공급자/유통업자 정보"
+    - "○ 제조자 정보"
+    - "- 회사명 :"
+    - "- 주소 :"
+  seed_keywords:
+    - "제품명"
+    - "회사명"
+    - "주소"
+    - "전화번호"
+    - "긴급 전화번호"
+  engines_order: ["colon_or_dash", "two_col_space", "loose_space", "prefix_smart"]
+
+labels:
+  product:
+    aliases: ["제품명", "Product name", "Product identifier", "Trade name"]
+    # 이 문서처럼 '가. 제품명' 다음 줄에 '- XXXXX'가 오는 케이스는
+    # 기본 엔진(fallback)이 근접 스캔으로 잡아주므로 split만 기본값 유지
+    split: ["colon_or_dash", "two_col_space", "loose_space"]
+
+  company:
+    # 제조자/공급자 블록 모두 커버
+    aliases: ["회사명", "제조자", "제조사명", "공급자", "판매사", "Supplier", "Manufacturer"]
+    # '- 회사명 : 000' 같은 대시 라벨 우선
+    split: ["colon_or_dash", "two_col_space", "loose_space"]
+
+  address:
+    aliases: ["주소", "소재지", "본사주소", "사업장주소", "Address"]
+    # 주소는 prefix 허용(예: '주소서울 …')
+    split: ["colon_or_dash", "two_col_space", "prefix_smart"]

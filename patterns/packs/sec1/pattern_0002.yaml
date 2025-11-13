@@ -1,0 +1,25 @@
+meta:
+  id: sec1_pattern_0002
+  title: "숫자소제목(1.1/1.2/1.3) + 콜론/두칸 분리"
+  priority: 45
+  doc_signatures:
+    - "1.1. 제품명"
+    - "1.3. 공급자 정보"
+  seed_keywords: ["제품명","회사명","주소","전화"]
+
+labels:
+  product:
+    aliases: ["제품명","Product name","Product identifier","Trade name"]
+    split: ["colon_or_dash","two_col_space","prefix_smart"]   # 같은 줄 우선
+  company:
+    aliases: ["회사명","제조사명","제조자","Supplier","Manufacturer"]
+    split: ["colon_or_dash","two_col_space"]
+  address:
+    aliases: ["주소","Address","사업장주소","본사주소"]
+    split: ["colon_or_dash","two_col_space","prefix_smart"]
+
+validators:
+  product:
+    forbid_keywords: ["전화","주소","회사","권고","제한"]
+    require_letter: true
+    forbid_phone: true

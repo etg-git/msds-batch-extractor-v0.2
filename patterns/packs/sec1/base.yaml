@@ -1,0 +1,22 @@
+name: base
+priority: 50
+
+labels:
+  product:
+    aliases: ["제품명","제품 명","제품명칭","Product name","Trade name","Product identifier"]
+    split: ["colon_or_dash","two_col_space","loose_space"]
+  company:
+    aliases: ["회사명","제조사명","제조자","공급자","Manufacturer","Supplier"]
+    split: ["colon_or_dash","two_col_space","loose_space"]
+  address:
+    aliases: ["주소","소재지","본사주소","사업장주소","Address","所在地"]
+    split: ["colon_or_dash","two_col_space","prefix_smart"]
+
+validators:
+  product:
+    require_letter: true
+    forbid_phone: true
+    forbid_keywords: ["전화","전화번호","긴급","tel","fax","주소","회사","제조","공급자","판매사","권고 용도","용도","제한","정보","기재","문의","연락"]
+    pick: letter_number_code   # SP-33처럼 코드형 우선
+options:
+  strip_prefix_kor_enum: true  # 가./나./다. 제거
