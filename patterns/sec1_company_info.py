@@ -2,6 +2,7 @@
 from __future__ import annotations
 import re
 from typing import Dict, List, Optional
+
 from .utils_text import (
     squash_ws, strip_special_ws, best_label,
     split_label_value, split_label_value_smart,
@@ -792,15 +793,16 @@ def extract_section1_fields(text: str) -> Dict[str, str]:
         return out
 
     lines = [l for l in (text or "").splitlines() if l is not None]
-    # 인라인 1차
+
+    # ─────────────────────────────────────────
+    # 1차 인라인 스캔
+    # ─────────────────────────────────────────
     for ln in lines:
         # 제품명
         if not out["product_name"]:
             v = _inline_try_pc(ln, LABELS["product_name"], is_product=True)
-            if v:
-                # 글자+숫자 제품명 or 숫자 코드 둘 다 허용
-                if _looks_product_like(v) or _is_digit_code(v):
-                    out["product_name"] = v
+            if v and (_looks_product_like(v) or _is_digit_code(v)):
+                out["product_name"] = v
 
         # 회사명 + 같은 줄 주소
         if not out["company_name"]:
@@ -809,13 +811,12 @@ def extract_section1_fields(text: str) -> Dict[str, str]:
             if v_norm and _looks_company_like(v_norm):
                 out["company_name"] = v_norm
 
-                # 회사명이 잡힌 라인이면, 같은 줄에서 주소 꼬리도 한 번 시도
                 if not out["address"]:
                     addr_from_company = _address_from_company_line(ln)
                     if addr_from_company:
                         out["address"] = addr_from_company
 
-        # 순수 주소 라벨 라인
+        # 주소 인라인
         if not out["address"]:
             v = _inline_try_addr(ln)
             if v:
@@ -847,23 +848,49 @@ def extract_section1_fields(text: str) -> Dict[str, str]:
         if found:
             out["address"] = _clean_value(found)
 
-        # 추가 fallback: "주소 xxx" / "주 소 xxx" 같이 콜론 없이 붙은 케이스
+        # fallback 1: "주소" 라인 + 같은 줄/다음 줄에서 강제 추출
         if not out["address"]:
-          for ln in lines:
-              raw = _prep_line(ln)
-              m = re.match(
-                  r"^(주소|주\s*소|소재지|본사주소|사업장주소|사업장\s*소재지)\s*(.+)$",
-                  raw,
-              )
-              if m:
-                  out["address"] = _clean_value(m.group(2))
-                  break
+            for i, raw in enumerate(lines):
+                # 현재 줄 + 다음 줄까지 하나의 윈도우로 본다
+                window = (raw or "") + " " + (lines[i + 1] if i + 1 < len(lines) else "")
+                if "주소" not in window:
+                    continue
+
+                win_norm = _prep_line(window)
+                m = re.search(r"주소\s*[:：]?\s*(.+)$", win_norm)
+                if not m:
+                    continue
+
+                cand = m.group(1)
+                # 전화/팩스/긴급 같은 꼬리 제거
+                cand = re.split(r"(긴급|전화|Tel|TEL|Phone|Fax|FAX)", cand)[0]
+                cand = cand.strip(" ,;:-")
+
+                # 진짜 주소처럼 보이는지 (시/군/구/읍/면/동/리/로/길 포함)
+                if not ADDR_HINT_RE.search(cand):
+                    continue
+
+                cleaned = _clean_value(cand)
+                if cleaned:
+                    out["address"] = cleaned
+                    break
+
+        # fallback 2: "주소 값" (콜론 없이 붙은 케이스)
+        if not out["address"]:
+            for ln in lines:
+                raw = _prep_line(ln)
+                m = re.match(
+                    r"^(주소|소재지|본사주소|사업장주소|사업장\s*소재지)\s*(.+)$",
+                    raw,
+                )
+                if m:
+                    out["address"] = _clean_value(m.group(2))
+                    break
 
     # ─────────────────────────────────────────
     # 회사명 보정
     # ─────────────────────────────────────────
     if not out["company_name"]:
-        # 1) 기존: 라벨 한 줄 + 다음 줄 후보
         for i, raw in enumerate(lines):
             s = _prep_line(raw)
             m = _COMPANY_LABEL_RE.match(s)
@@ -876,12 +903,9 @@ def extract_section1_fields(text: str) -> Dict[str, str]:
                 out["company_name"] = cand
                 break
 
-        # 2) 느슨한 패턴: "…회사명 : XXX" 또는 "회사명 XXX"
         if not out["company_name"]:
             for raw in lines:
                 s = _prep_line(raw)
-                # ex) "생산 및 공급 회사명 : 조선선재㈜"
-                #     "회사명 한강화학주식회사"
                 m2 = re.search(r"회사명\s*[:：]?\s*(.+)$", s)
                 if not m2:
                     continue
@@ -890,7 +914,6 @@ def extract_section1_fields(text: str) -> Dict[str, str]:
                     out["company_name"] = cand
                     break
 
-        # 3) 그래도 없으면 전역 최적값
         if not out["company_name"]:
             found = _global_best(
                 lines,
@@ -932,7 +955,10 @@ def extract_section1_fields(text: str) -> Dict[str, str]:
                 r"(?=.*[A-Za-z])(?=.*\d)^[A-Za-z0-9][A-Za-z0-9\-\._/]{1,}$"
             )
             found = _global_best(
-                lines, _looks_product_like, prefer_re=code_like, post=_pick_product_token
+                lines,
+                _looks_product_like,
+                prefer_re=code_like,
+                post=_pick_product_token,
             )
         if not found:
             found = _fallback_product_from_text("\n".join(lines))
@@ -942,6 +968,8 @@ def extract_section1_fields(text: str) -> Dict[str, str]:
     # 마지막 안전장치
     out["company_name"] = _normalize_company(out["company_name"])
     return out
+
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────

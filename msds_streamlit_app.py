@@ -1,5 +1,7 @@
-# msds_streamlit_app.py 
-# 가벼운 UI: 설정 없음 / 50개 업로드 / 섹션 1 요약(제품명, 회사명, 주소) + 섹션 2 요약 표시
+# msds_streamlit_app.py
+# 섹션 1 요약(제품명, 회사명, 주소)
+# + 섹션 2 요약(신호어, H/P 개수, GHS 그림문자 개수)
+# + 섹션 15 요약(규제항목 매핑 커버리지 / 해당 항목 수)
 
 from __future__ import annotations
 import json
@@ -12,7 +14,9 @@ import streamlit as st
 import pandas as pd
 
 import msds_section_extractor as extractor
-from patterns import parse_section, preview_packs_sec1, parse_section_sec1_with_debug  # 섹션 파서 레지스트리
+from patterns import preview_packs_sec1, parse_section_sec1_with_debug  # 섹션1 파서
+from patterns.sec2_hazard_info import parse_section_sec2_hazard        # 섹션2 파서
+from patterns.sec15_regulatory import extract as parse_section_sec15_regulatory  # 섹션15 파서
 
 SECTION_TITLES = {
     "화학제품과_회사정보": "1. 화학제품과 회사에 관한 정보",
@@ -37,12 +41,14 @@ if "uploader_key" not in st.session_state:
 if "uploaded_tmp_paths" not in st.session_state:
     st.session_state["uploaded_tmp_paths"] = []
 
+
 def _save_bytes_to_temp(data: bytes) -> Path:
     with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(data)
         p = Path(tmp.name)
         st.session_state["uploaded_tmp_paths"].append(str(p))
         return p
+
 
 def _download_json_button(data: dict, file_basename: str):
     payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
@@ -54,14 +60,17 @@ def _download_json_button(data: dict, file_basename: str):
         use_container_width=True,
     )
 
+
 def _section_len_map(sections: dict) -> dict:
     keys = ["화학제품과_회사정보", "유해성위험성", "구성성분", "물리화학적특성", "법적규제"]
     return {k: len(sections.get(k, "") or "") for k in keys}
+
 
 def _found_missing_lists(sections: dict):
     found = [SECTION_TITLES[k] for k in SECTION_ORDER if k in sections and sections.get(k)]
     missing = [SECTION_TITLES[k] for k in SECTION_ORDER if k not in sections or not sections.get(k)]
     return found, missing
+
 
 def _render_badge(text: str, color: str = "#6c757d"):
     st.markdown(
@@ -70,9 +79,14 @@ def _render_badge(text: str, color: str = "#6c757d"):
         unsafe_allow_html=True,
     )
 
+
 st.set_page_config(page_title="MSDS Section Extractor", layout="wide")
 st.title("MSDS Section Extractor")
-st.caption("여러 PDF를 한 번에 업로드하고, 섹션 분리와 요약 정보를 확인합니다. (섹션 1: 제품명/회사명/주소, 섹션 2: 신호어·H/P 코드)")
+st.caption(
+    "여러 PDF를 한 번에 업로드하고, 섹션 분리와 요약 정보를 확인합니다. "
+    "(섹션 1: 제품명/회사명/주소, 섹션 2: 신호어·H/P 개수·GHS 그림문자 개수, "
+    "섹션 15: 규제항목 매핑 커버리지/해당 항목 수)"
+)
 
 # -----------------------------
 # 업로드 전체 삭제 버튼 + 업로더
@@ -97,7 +111,7 @@ uploaded_files = st.file_uploader(
     "PDF 파일 업로드 (여러 개 선택 가능, ~50권 권장)",
     type=["pdf"],
     accept_multiple_files=True,
-    key=f"uploader_{st.session_state['uploader_key']}",  # ← key가 바뀌면 업로더가 초기화됨
+    key=f"uploader_{st.session_state['uploader_key']}",
 )
 
 colf1, colf2 = st.columns([2, 1])
@@ -116,12 +130,14 @@ for uf in uploaded_files:
     b = uf.getvalue()
     if not b:
         continue
-    entries.append({
-        "name": uf.name,
-        "size_kb": round(uf.size/1024, 1),
-        "bytes": b,
-        "is_pdf": b.startswith(b"%PDF"),
-    })
+    entries.append(
+        {
+            "name": uf.name,
+            "size_kb": round(uf.size / 1024, 1),
+            "bytes": b,
+            "is_pdf": b.startswith(b"%PDF"),
+        }
+    )
 
 # Filter
 if name_filter.strip():
@@ -139,11 +155,12 @@ for i, ent in enumerate(entries, start=1):
     err = ""
     sections = {}
 
-    # 섹션 1/2 요약 정보
+    # 섹션 1/2/15 요약 정보
     s1_summary = {"product_name": "", "company_name": "", "address": ""}
     s1_applied = None  # 실제 적용된 YAML 팩 id/name
 
-    s2_summary = {}  # 섹션 2 구조화 결과 (ghs_classification, signal_word 등)
+    s2_summary = {}    # 섹션 2 구조화 결과
+    s15_summary = {}   # 섹션 15 구조화 결과
 
     if not ent["is_pdf"]:
         status = "INVALID"
@@ -164,11 +181,19 @@ for i, ent in enumerate(entries, start=1):
             s2_text = sections.get("유해성위험성", "")
             if s2_text:
                 try:
-                    # patterns.parse_section가 섹션 키 기반으로 적절한 파서를 호출한다고 가정
-                    s2_summary = parse_section("유해성위험성", s2_text) or {}
+                    s2_summary = parse_section_sec2_hazard(s2_text) or {}
                 except Exception as e2:
                     s2_summary = {}
                     err = (err + " | " if err else "") + f"sec2 parse error: {e2}"
+
+            # 섹션 15 요약 (법적 규제현황)
+            s15_text = sections.get("법적규제", "")
+            if s15_text:
+                try:
+                    s15_summary = parse_section_sec15_regulatory(s15_text) or {}
+                except Exception as e3:
+                    s15_summary = {}
+                    err = (err + " | " if err else "") + f"sec15 parse error: {e3}"
 
         except Exception as e:
             status = "ERROR"
@@ -183,38 +208,61 @@ for i, ent in enumerate(entries, start=1):
     found, missing = _found_missing_lists(sections)
     lens = _section_len_map(sections)
 
-    # 섹션 2 요약값 일부를 테이블용으로 정리
-    s2_sig = s2_summary.get("signal_word") if isinstance(s2_summary, dict) else None
-    s2_h_list = s2_summary.get("hazard_statements") if isinstance(s2_summary, dict) else None
-    s2_p_list = s2_summary.get("precautionary_statements") if isinstance(s2_summary, dict) else None
+    # 섹션 2 요약값 (텍스트/코드/그림문자)
+    s2_sig = ""
+    s2_h_codes = []
+    s2_p_codes = []
+    s2_pic_ids = []
+    if isinstance(s2_summary, dict) and s2_summary:
+        s2_sig = s2_summary.get("signal_word") or ""
+        s2_h_codes = s2_summary.get("hazard_codes") or []
+        s2_p_codes = (
+            s2_summary.get("precautionary_codes_flat")
+            or s2_summary.get("precautionary_codes_raw")
+            or []
+        )
+        pictos = s2_summary.get("pictograms") or []
+        s2_pic_ids = [p.get("id") for p in pictos if p.get("id")]
 
-    s2_h_count = len(s2_h_list or [])
-    s2_p_count = len(s2_p_list or [])
+    # 섹션 15 요약값
+    s15_items = s15_summary.get("items") if isinstance(s15_summary, dict) else None
+    s15_coverage = float(s15_summary.get("coverage", 0.0)) if isinstance(s15_summary, dict) else 0.0
+    s15_present_cnt = 0
+    if s15_items:
+        for it in s15_items:
+            if it.get("present") is True:
+                s15_present_cnt += 1
 
-    rows.append({
-        "#": i,
-        "File": fname,
-        "KB": ent["size_kb"],
-        "Status": status,
-        "Found": len(found),
-        "Missing": len(missing),
-        "len_1": lens["화학제품과_회사정보"],
-        "len_2": lens["유해성위험성"],
-        "len_3": lens["구성성분"],
-        "len_9": lens["물리화학적특성"],
-        "len_15": lens["법적규제"],
-        "제품명": s1_summary.get("product_name", ""),
-        "회사명": s1_summary.get("company_name", ""),
-        "주소": s1_summary.get("address", ""),
-        "S2_신호어": s2_sig or "",
-        "S2_H개수": s2_h_count,
-        "S2_P개수": s2_p_count,
-        "_sections": sections,
-        "_s1": s1_summary,
-        "_s1_applied": s1_applied,
-        "_s2": s2_summary,
-        "_err": err,
-    })
+    rows.append(
+        {
+            "#": i,
+            "File": fname,
+            "KB": ent["size_kb"],
+            "Status": status,
+            "Found": len(found),
+            "Missing": len(missing),
+            "len_1": lens["화학제품과_회사정보"],
+            "len_2": lens["유해성위험성"],
+            "len_3": lens["구성성분"],
+            "len_9": lens["물리화학적특성"],
+            "len_15": lens["법적규제"],
+            "제품명": s1_summary.get("product_name", ""),
+            "회사명": s1_summary.get("company_name", ""),
+            "주소": s1_summary.get("address", ""),
+            "S2_신호어": s2_sig or "",
+            "S2_H개수": len(s2_h_codes),
+            "S2_P개수": len(s2_p_codes),
+            "S2_그림문자개수": len(s2_pic_ids),
+            "S15_커버리지": round(s15_coverage, 3),
+            "S15_해당항목수": s15_present_cnt,
+            "_sections": sections,
+            "_s1": s1_summary,
+            "_s1_applied": s1_applied,
+            "_s2": s2_summary,
+            "_s15": s15_summary,
+            "_err": err,
+        }
+    )
 
     progress.progress(i / max(1, len(entries)), text=f"처리 중... ({i}/{len(entries)})")
 
@@ -222,39 +270,49 @@ elapsed = time.time() - start
 progress.empty()
 st.success(f"총 {len(rows)}개 파일 처리 완료 (약 {elapsed:.1f}초)")
 
-df = pd.DataFrame([{
-    "#": r["#"],
-    "File": r["File"],
-    "KB": r["KB"],
-    "Status": r["Status"],
-    "Found": r["Found"],
-    "Missing": r["Missing"],
-    "len_1": r["len_1"],
-    "len_2": r["len_2"],
-    "len_3": r["len_3"],
-    "len_9": r["len_9"],
-    "len_15": r["len_15"],
-    "제품명": r["제품명"],
-    "회사명": r["회사명"],
-    "주소": r["주소"],
-    "S2_신호어": r["S2_신호어"],
-    "S2_H개수": r["S2_H개수"],
-    "S2_P개수": r["S2_P개수"],
-} for r in rows])
+# ─────────────────────────────────────
+# 요약 테이블: 코드/그림문자는 “개수만”
+# ─────────────────────────────────────
+df = pd.DataFrame(
+    [
+        {
+            "#": r["#"],
+            "File": r["File"],
+            "KB": r["KB"],
+            "제품명": r["제품명"],
+            "회사명": r["회사명"],
+            "주소": r["주소"],
+            "S2_신호어": r["S2_신호어"],
+            "S2_H개수": r["S2_H개수"],
+            "S2_P개수": r["S2_P개수"],
+            "S2_그림문자개수": r["S2_그림문자개수"],
+            "S15_커버리지": r["S15_커버리지"],
+            "S15_해당항목수": r["S15_해당항목수"],
+        }
+        for r in rows
+    ]
+)
 
 if only_missing:
-    df_view = df[df["Missing"] > 0].reset_index(drop=True)
+    missing_indices = [idx for idx, r in enumerate(rows) if r["Missing"] > 0]
+    df_view = df.iloc[missing_indices].reset_index(drop=True)
 else:
     df_view = df
 
 st.subheader("요약")
-st.caption("섹션 길이와 함께 1번 섹션 요약(제품명/회사명/주소)과 2번 섹션 요약(신호어, H/P 문구 개수)을 표로 제공합니다.")
+st.caption(
+    "파일별로 제품명·회사명·주소와 함께, 섹션 2에서 추출한 신호어 / H코드 개수 / P코드 개수 / GHS 그림문자 개수와 "
+    "섹션 15에서 매핑된 규제항목 커버리지·해당 항목 수를 표로 제공합니다."
+)
 st.dataframe(
     df_view,
     use_container_width=True,
-    height=min(1000, 100 + 50 * max(4, len(df_view))),
+    height=min(1000, 100 + 40 * max(4, len(df_view))),
 )
 
+# ─────────────────────────────────────
+# 파일별 상세
+# ─────────────────────────────────────
 st.divider()
 st.subheader("파일별 상세")
 
@@ -267,7 +325,11 @@ for r in targets:
         with topc2:
             _render_badge(f"{r['KB']} KB")
         with topc3:
-            color = "#28a745" if r["Missing"] == 0 and r["Status"] == "OK" else ("#dc3545" if r["Status"] != "OK" or r["Missing"] > 0 else "#6c757d")
+            color = (
+                "#28a745"
+                if r["Missing"] == 0 and r["Status"] == "OK"
+                else ("#dc3545" if r["Status"] != "OK" or r["Missing"] > 0 else "#6c757d")
+            )
             _render_badge(r["Status"], color)
 
         if r["_err"]:
@@ -286,7 +348,7 @@ for r in targets:
                 pack_id = top[0].get("id") or top[0].get("name")
                 _render_badge(f"apply? {pack_id} · {top[0]['score']}", "#17a2b8")
 
-        # 섹션별 탭: 탭 안에서 섹션 요약 카드가 바뀌도록 구성
+        # 섹션별 탭
         sections = r["_sections"]
         keys = [k for k in SECTION_ORDER if sections.get(k)]
         if not keys:
@@ -314,22 +376,27 @@ for r in targets:
                                 <div><b>주소</b>: {address_html}</div>
                             </div>
                             """,
-                            unsafe_allow_html=True
+                            unsafe_allow_html=True,
                         )
 
-                    # 섹션 2 탭: 신호어 + H/P 코드 리스트
+                    # 섹션 2 탭: 신호어 + H/P 코드 리스트 + 그림문자 코드/이미지
                     if k == "유해성위험성":
                         s2 = r.get("_s2") or {}
                         if isinstance(s2, dict) and s2:
                             signal_word = s2.get("signal_word") or "—"
-                            h_list = s2.get("hazard_statements") or []
-                            p_list = s2.get("precautionary_statements") or []
-
-                            h_codes = sorted({(item.get("code") or "").strip() for item in h_list if item.get("code")})
-                            p_codes = sorted({(item.get("code") or "").strip() for item in p_list if item.get("code")})
+                            h_codes = s2.get("hazard_codes") or []
+                            p_codes = (
+                                s2.get("precautionary_codes_flat")
+                                or s2.get("precautionary_codes_raw")
+                                or []
+                            )
+                            pictos = s2.get("pictograms") or []
 
                             h_codes_str = ", ".join(h_codes) if h_codes else "—"
                             p_codes_str = ", ".join(p_codes) if p_codes else "—"
+                            pic_ids_str = (
+                                ", ".join([p.get("id", "") for p in pictos if p.get("id")]) or "—"
+                            )
 
                             st.markdown(
                                 f"""
@@ -338,18 +405,89 @@ for r in targets:
                                     <div><b>신호어</b>: {signal_word}</div>
                                     <div><b>H 코드</b>: {h_codes_str}</div>
                                     <div><b>P 코드</b>: {p_codes_str}</div>
+                                    <div><b>GHS 그림문자 코드</b>: {pic_ids_str}</div>
                                 </div>
                                 """,
-                                unsafe_allow_html=True
+                                unsafe_allow_html=True,
                             )
 
-                    # 섹션 원문
-                    st.text_area(
-                        label=SECTION_TITLES[k],
-                        value=text,
-                        height=360,
-                        key=f"{r['#']}_txt_{k}_{len(text)}",
-                    )
+                            # 그림문자 이미지 카드
+                            if pictos:
+                                st.markdown("##### GHS 그림문자")
+                                cols = st.columns(len(pictos))
+                                for col, pic in zip(cols, pictos):
+                                    with col:
+                                        img_path = pic.get("image")
+                                        pic_id = pic.get("id", "")
+                                        if img_path and os.path.exists(img_path):
+                                            st.image(
+                                                img_path,
+                                                caption=pic_id,
+                                                width=100,
+                                            )
+                                        else:
+                                            st.write(pic_id)
+
+                    # 섹션 15 탭: 규제항목 매핑 결과
+                    if k == "법적규제":
+                        s15 = r.get("_s15") or {}
+                        if isinstance(s15, dict) and s15:
+                            items = s15.get("items") or []
+                            coverage = float(s15.get("coverage", 0.0))
+
+                            present_cnt = sum(1 for it in items if it.get("present") is True)
+
+                            st.markdown(
+                                f"""
+                                <div style="padding:12px;border:1px solid #e9ecef;border-radius:12px;background:#fff;margin:6px 0;">
+                                    <div style="font-weight:600;margin-bottom:6px;">섹션 15 요약 (법적 규제현황)</div>
+                                    <div>매핑 커버리지: {coverage:.3f}</div>
+                                    <div>해당 규제항목 수: {present_cnt}개</div>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+
+                            if items:
+                                def _present_label(v):
+                                    if v is True:
+                                        return "해당"
+                                    if v is False:
+                                        return "미해당"
+                                    return "미상"
+
+                                df_items = pd.DataFrame(
+                                    [
+                                        {
+                                            "규제항목": it.get("canonical_name", ""),
+                                            "해당여부": _present_label(it.get("present")),
+                                            "유사도": it.get("score", 0.0),
+                                            "원문": it.get("source_line", ""),
+                                        }
+                                        for it in items
+                                    ]
+                                )
+
+                                # '해당'인 규제항목은 행 배경색 강조
+                                def highlight_present(row):
+                                    color = "#d4edda" if row.get("해당여부") == "해당" else ""
+                                    return [f"background-color: {color}"] * len(row)
+
+                                styled = df_items.style.apply(highlight_present, axis=1)
+
+                                st.dataframe(
+                                    styled,
+                                    use_container_width=True,
+                                    height=min(600, 100 + 24 * max(4, len(df_items))),
+                                )
+
+                            # 섹션 원문
+                            st.text_area(
+                                label=SECTION_TITLES[k],
+                                value=text,
+                                height=360,
+                                key=f"{r['#']}_txt_{k}_{len(text)}",
+                            )
 
         # 파일별 섹션 JSON 다운로드
         _download_json_button(r["_sections"], Path(r["File"]).stem)
