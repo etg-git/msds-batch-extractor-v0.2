@@ -64,7 +64,8 @@ PROB_KEYS = {
     13: (["폐기"], ["폐기", "주의"]),
     14: (["운송"], ["운송", "사항"]),
     15: (["법적", "법규"], ["규제", "규졔", "규제현황", "규졔현황"]),
-    16: (["기타", "참고"], ["기타", "참고", "사항"]),
+    # 여기만 수정
+    16: (["참고", "사항"], ["기타", "그 밖의", "참고사항"]),
 }
 
 ALL_SECTION_KEYS = [
@@ -102,7 +103,8 @@ SECTION_TITLES = {
     "폐기시주의사항": "13. 폐기 시 주의사항",
     "운송에필요한사항": "14. 운송에 필요한 사항",
     "법적규제": "15. 법적 규제현황",
-    "기타참고사항": "16. 기타 참고사항",
+    # ← 제목을 '그 밖의 참고사항'으로 변경
+    "기타참고사항": "16. 기타/그 밖의 참고사항",
 }
 
 
@@ -336,15 +338,37 @@ def normalize_text(text: str) -> str:
 
 # ── 전역 반복 헤더/푸터(문서 전반에서) ──────────────────────────────────────────
 def is_header_line(line: str) -> bool:
+    """
+    페이지 상단/하단의 반복 헤더/푸터를 판정.
+    일반 본문까지 잘리지 않도록 패턴을 최대한 보수적으로 둔다.
+    """
     normalized = normalize_text(line)
+
+    # '본msds는 ...' 처럼 본문에 자주 등장하는 문장은 절대 헤더로 보지 않음
+    if "본msds는" in normalized:
+        return False
+
     header_patterns = [
-        r"msds번호", r"문서번호", r"개정일자", r"개정번호",
-        r"물질안전보건자료", r"materialsafetydatasheets",
+        r"msds번호",
+        r"문서번호",
+        r"개정일자",
+        r"개정번호",
+
+        # 제목 한 줄 그대로인 경우만 헤더로 간주 (본문에 섞인 '물질안전보건자료에 관한 기준' 등은 제외)
+        r"^물질안전보건자료$",
+        r"^materialsafetydatasheets?$",
+
         r"ghs[\-\s]?msds",
+
+        # 페이지 번호
         r"\d+\s*/\s*\d+\s*(페이지|page)",
         r"page\s*\d+\s*/\s*\d+",
-        r"-\d+/\d+-\s*rev\.", r"rev\.\s*\d+",
-        r"copyright", r"all\s*rights\s*reserved",
+
+        # 개정 버전/저작권
+        r"-\d+/\d+-\s*rev\.",
+        r"rev\.\s*\d+",
+        r"copyright",
+        r"all\s*rights\s*reserved",
     ]
     return any(re.search(p, normalized) for p in header_patterns)
 
@@ -522,6 +546,8 @@ def find_section_patterns():
         "기타참고사항": [
             sec(16) + rf"기타{sep}참고{sep}사항",
             sec(16) + rf"기타{sep}사항",
+            sec(16) + rf"그{sep}밖{sep}의{sep}참고{sep}사항",
+            sec(16) + rf"그{sep}밖{sep}의{sep}사항",
         ],
     }
 
@@ -543,7 +569,13 @@ FUZZY_CANDIDATES = {
     "폐기시주의사항": ["폐기시 주의사항", "폐기 시 주의사항", "폐기 방법"],
     "운송에필요한사항": ["운송에 필요한 사항", "운송에 관한 사항", "운송 사항"],
     "법적규제": ["법적 규제", "법적 규제 현황", "법규 규제", "법규 규제 현황"],
-    "기타참고사항": ["기타 참고사항", "기타 사항", "기타 참고"],
+    "기타참고사항": [
+        "기타 참고사항",
+        "기타 사항",
+        "기타 참고",
+        "그 밖의 참고사항",
+        "그 밖의 사항",
+    ],
 }
 
 
@@ -1012,7 +1044,7 @@ def run_ui():
     st.set_page_config("MSDS Section Extractor (1~16)", layout="wide")
     st.title("MSDS 섹션 뷰어 (1~16)")
 
-    base_dir = Path(r"D:\PROJECT\AI\msds-batch-extractor-v0.2\msds\msds")
+    base_dir = Path(r"C:\Users\엄태균\Desktop\RD\msds-batch-extractor-v0.2\msds\msds")
     pdf_files = sorted(base_dir.glob("*.pdf"))
 
     if not pdf_files:
@@ -1070,6 +1102,7 @@ def run_ui():
         title = SECTION_TITLES.get(key, key)
         content = sections.get(key, "").strip() if sections else ""
 
+        # expanded=bool(content) 로 이미 문자열 → bool 변환 완료
         with st.expander(title, expanded=bool(content)):
             if not content:
                 st.info("이 섹션은 추출되지 않았습니다.")
@@ -1078,9 +1111,6 @@ def run_ui():
 
 
 if __name__ == "__main__":
-    # Streamlit 실행 시 이 부분이 호출되지만,
-    # 일반 Python 실행으로도 테스트 가능하도록 둠
     run_ui()
-    # CLI 모드로 쓰고 싶으면 아래처럼 교체:
     # main_single()
     # batch_process_msds(r"D:\PROJECT\AI\msds-batch-extractor-v0.2\msds\msds")
