@@ -1,10 +1,9 @@
 # msds_streamlit_app.py
-# 사이드바: 아이콘 + 텍스트 메뉴 리스트 (버튼처럼 안 보이게, session_state 라우팅)
+# 사이드바: 아이콘 + 텍스트 메뉴 리스트 (radio 기반, 버튼/링크 X)
 
 from __future__ import annotations
 import streamlit as st
 
-# 개별 페이지 import
 from msds_pages.msds_upload_page import render as render_msds_upload
 from msds_pages.msds_manage_page import render as render_msds_manage
 from msds_pages.msds_summary_page import render as render_msds_summary
@@ -13,7 +12,9 @@ from msds_pages.shms_composition_page import render as render_shms_composition
 
 st.set_page_config(page_title="MSDS AI / SHMS 연계", layout="wide")
 
-# ------------------------ NAV 정의 (아이콘 + 라벨 + 키) ------------------------
+# ----------------------------------------------------------------------
+# 네비게이션 정의 (아이콘 + 라벨 + 키)
+# ----------------------------------------------------------------------
 NAV_ITEMS = [
     ("🟦", "MSDS 파일 업로드", "msds_upload"),
     ("📁", "MSDS 데이터 관리", "msds_manage"),
@@ -25,9 +26,9 @@ NAV_ITEMS = [
 if "active_page" not in st.session_state:
     st.session_state["active_page"] = "msds_upload"
 
-current_page = st.session_state["active_page"]
-
-# ------------------------ 스타일: 버튼 크롬 제거 + 리스트형 메뉴 ------------------------
+# ----------------------------------------------------------------------
+# 스타일: radio 동그라미 숨기고, 리스트형 텍스트 메뉴로 보이게
+# ----------------------------------------------------------------------
 st.markdown(
     """
     <style>
@@ -57,68 +58,69 @@ st.markdown(
         letter-spacing: 0.3px;
     }
 
-    /* 전체 메뉴 컨테이너 */
-    .sidebar-nav {
+    /* 전체 메뉴 wrapper */
+    div[data-testid="stSidebar"] .sidebar-nav {
         margin-top: 0.2rem;
+        font-size: 0.9rem;
     }
 
-    /* 한 줄 메뉴 wrapper */
-    div[data-testid="stSidebar"] .nav-row {
-        margin: 2px 0;
-        padding: 0;
-        border-radius: 12px;
+    /* stRadio 컨테이너 */
+    div[data-testid="stSidebar"] .stRadio > div {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
     }
 
-    /* 기본 stButton 껍데기 제거 */
-    div[data-testid="stSidebar"] .nav-row .stButton {
-        margin: 0 !important;
-        padding: 0 !important;
+    /* 라디오 동그라미 숨기기 */
+    div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:first-child {
+        display: none !important;
     }
 
-    /* 진짜 버튼을 “아이콘+텍스트 리스트”처럼 보이게 */
-    div[data-testid="stSidebar"] .nav-row .stButton > button {
-        display: flex !important;
-        align-items: center !important;
-        gap: 0.45rem !important;
-
-        width: 100% !important;
-        padding: 0.30rem 0.45rem !important;
-
-        background: transparent !important;
-        border: none !important;
-        box-shadow: none !important;
-        border-radius: 12px !important;
-
-        font-size: 0.9rem !important;
-        color: #495057 !important;
-        text-align: left !important;
-        font-weight: 500 !important;
-
-        cursor: pointer !important;
+    /* 각 항목(label)을 아이콘+텍스트 한 줄로 */
+    div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.20rem 0.35rem;
+        border-radius: 10px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
     }
 
-    /* hover 시 살짝만 배경 */
-    div[data-testid="stSidebar"] .nav-row .stButton > button:hover {
-        background: #f1f3f5 !important;
-        color: #343a40 !important;
+    /* 텍스트 span */
+    div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label > div:last-child {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: 0.9rem;
+        color: #495057;
     }
 
-    div[data-testid="stSidebar"] .nav-row .stButton > button:focus {
-        outline: none !important;
-        box-shadow: none !important;
+    /* hover 효과 */
+    div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label:hover {
+        background: #f1f3f5;
     }
 
-    /* 활성 메뉴 하이라이트 */
-    div[data-testid="stSidebar"] .nav-row-active .stButton > button {
-        background: #e7f0ff !important;
-        color: #1c7ed6 !important;
+    /* 선택된 항목: background + 텍스트 색 변경 */
+    div[data-testid="stSidebar"] .stRadio div[role="radio"][aria-checked="true"] + div {
+        font-weight: 600;
+        color: #1c7ed6;
+    }
+    div[data-testid="stSidebar"] .stRadio div[role="radio"][aria-checked="true"]::before {
+        /* 선택된 항목의 label 배경 처리 (부모 label에 영향 주기 어려워서 약하게만) */
+    }
+    /* 선택된 label 전체 배경 (부모 label 기준) */
+    div[data-testid="stSidebar"] .stRadio div[role="radiogroup"] > label:has(div[role="radio"][aria-checked="true"]) {
+        background: #e7f0ff;
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ------------------------ 사이드바: 메뉴 리스트 (세션 상태 라우팅) ------------------------
+# ----------------------------------------------------------------------
+# 사이드바: radio 기반 메뉴
+# ----------------------------------------------------------------------
 with st.sidebar:
     st.markdown('<div class="sidebar-app-title">MSDS AI 콘솔</div>', unsafe_allow_html=True)
     st.markdown(
@@ -128,21 +130,36 @@ with st.sidebar:
 
     st.markdown('<div class="sidebar-nav">', unsafe_allow_html=True)
 
-    for icon, label, key in NAV_ITEMS:
-        is_active = (key == current_page)
-        row_cls = "nav-row nav-row-active" if is_active else "nav-row"
-        st.markdown(f'<div class="{row_cls}">', unsafe_allow_html=True)
+    # 라디오 옵션 텍스트: "아이콘  라벨"
+    options = [f"{icon}  {label}" for icon, label, _ in NAV_ITEMS]
 
-        # 버튼 라벨 = 아이콘 + 텍스트
-        if st.button(f"{icon}  {label}", key=f"nav_{key}", use_container_width=True):
+    # 현재 active_page에 맞는 index 찾기
+    current_key = st.session_state["active_page"]
+    default_index = 0
+    for i, (_, _, key) in enumerate(NAV_ITEMS):
+        if key == current_key:
+            default_index = i
+            break
+
+    choice = st.radio(
+        label="메뉴 선택",
+        options=options,
+        index=default_index,
+        label_visibility="collapsed",
+        key="nav_radio",
+    )
+
+    # 선택된 라벨을 다시 key로 매핑
+    for (icon, label, key), opt in zip(NAV_ITEMS, options):
+        if opt == choice:
             st.session_state["active_page"] = key
-            st.rerun()
+            break
 
-        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# ------------------------ 메인 컨텐츠 라우팅 ------------------------
+# ----------------------------------------------------------------------
+# 메인 컨텐츠 라우팅 (session_state 기반, 링크/새페이지 없음)
+# ----------------------------------------------------------------------
 page = st.session_state.get("active_page", "msds_upload")
 
 if page == "msds_upload":
